@@ -1,6 +1,5 @@
 import customtkinter as ctk
 from customtkinter import filedialog
-import tkinter as tk
 import os
 import sys
 
@@ -92,10 +91,13 @@ class App(ctk.CTk):
         self.bind_all("<Escape>", self.on_escape)
         self.textbox.bind("<Escape>", self.on_escape)
 
-        # Right-click context menu (allows exiting Focus Mode, toggling Pin, etc.)
-        self.context_menu = tk.Menu(self, tearoff=0)
+        # Right-click context menu (theme-consistent popup)
+        self.context_menu_win = None
         self.textbox.bind("<Button-3>", self.show_context_menu)
         self.bind("<Button-3>", self.show_context_menu)
+        self.textbox.bind("<Button-1>", self._close_menu_if_open)
+        self.bind("<Button-1>", self._close_menu_if_open)
+        self.bind("<FocusOut>", self._on_app_focus_out)
 
         # Open file passed via command line argument / Windows file association (if any)
         if len(sys.argv) > 1:
@@ -143,46 +145,119 @@ class App(ctk.CTk):
         return "break"
 
     def on_escape(self, event=None):
-        """Exits Focus Mode when Escape is pressed."""
+        """Closes context menu if open; otherwise exits Focus Mode when Escape is pressed."""
+        if self.context_menu_win is not None:
+            self.close_context_menu()
+            return "break"
         if self.is_focus:
             self.set_focus_mode(False)
             return "break"
         return None
 
-    def show_context_menu(self, event):
-        """Displays a right-click context menu with Focus Mode, Pin, and editor actions."""
-        self.context_menu.delete(0, "end")
-        focus_label = "Exit Focus Mode (Esc)" if self.is_focus else "Focus Mode (Ctrl+Shift+F)"
-        self.context_menu.add_command(label=focus_label, command=self.toggle_focus)
+    def close_context_menu(self):
+        """Destroys the custom right-click popup menu if it is open."""
+        if self.context_menu_win is not None:
+            try:
+                self.context_menu_win.destroy()
+            except Exception:
+                pass
+            self.context_menu_win = None
 
-        pin_label = "Unpin (Always on Top)" if self.is_topmost else "Pin (Always on Top)"
-        self.context_menu.add_command(label=pin_label, command=self.toggle_pin)
-        self.context_menu.add_separator()
-        self.context_menu.add_command(label="Open...", command=self.open_file)
-        self.context_menu.add_command(label="Save", command=self.save_file)
-        self.context_menu.add_command(label="New", command=self.new_file)
-        self.context_menu.add_separator()
-        self.context_menu.add_command(
-            label="Cut",
-            command=lambda: (self.textbox._textbox.event_generate("<<Cut>>"), self.after_idle(self.text_changed)),
-        )
-        self.context_menu.add_command(
-            label="Copy",
-            command=lambda: self.textbox._textbox.event_generate("<<Copy>>"),
-        )
-        self.context_menu.add_command(
-            label="Paste",
-            command=lambda: (self.textbox._textbox.event_generate("<<Paste>>"), self.after_idle(self.text_changed)),
-        )
-        self.context_menu.add_command(
-            label="Select All",
-            command=lambda: self.textbox._textbox.event_generate("<<SelectAll>>"),
-        )
+    def _close_menu_if_open(self, event=None):
+        """Dismisses the context menu when clicking back inside the main window."""
+        if self.context_menu_win is not None:
+            self.close_context_menu()
 
+    def _on_app_focus_out(self, event=None):
+        """Closes the context menu if the application itself loses OS focus."""
+        if self.context_menu_win is not None and event is not None and event.widget == self:
+            self.after(100, self._check_app_focus)
+
+    def _check_app_focus(self):
+        if self.context_menu_win is None:
+            return
         try:
-            self.context_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            self.context_menu.grab_release()
+            if self.focus_get() is None:
+                self.close_context_menu()
+        except Exception:
+            self.close_context_menu()
+
+    def _run_menu_action(self, action):
+        self.close_context_menu()
+        action()
+
+    def _run_textbox_event(self, sequence, update_stats=False):
+        self.close_context_menu()
+        self.textbox._textbox.focus_set()
+        self.textbox._textbox.event_generate(sequence)
+        if update_stats:
+            self.after_idle(self.text_changed)
+
+    def show_context_menu(self, event):
+        """Displays a theme-matched right-click menu with Focus Mode, Pin, and editor actions."""
+        self.close_context_menu()
+
+        menu_win = ctk.CTkToplevel(self)
+        menu_win.withdraw()
+        menu_win.overrideredirect(True)
+        menu_win.attributes("-topmost", True)
+        self.context_menu_win = menu_win
+
+        container = ctk.CTkFrame(
+            master=menu_win,
+            corner_radius=6,
+            border_width=1,
+            fg_color=("gray90", "gray17"),
+            border_color=("gray70", "gray28"),
+        )
+        container.pack(fill="both", expand=True)
+
+        focus_label = "🎯 Exit Focus Mode (Esc)" if self.is_focus else "🎯 Focus Mode (Ctrl+Shift+F)"
+        pin_label = "📌 Unpin" if self.is_topmost else "📌 Pin (Always on Top)"
+
+        items = [
+            (focus_label, lambda: self._run_menu_action(self.toggle_focus)),
+            (pin_label, lambda: self._run_menu_action(self.toggle_pin)),
+            None,
+            ("Open...", lambda: self._run_menu_action(self.open_file)),
+            ("Save", lambda: self._run_menu_action(self.save_file)),
+            ("New", lambda: self._run_menu_action(self.new_file)),
+            None,
+            ("Cut", lambda: self._run_textbox_event("<<Cut>>", update_stats=True)),
+            ("Copy", lambda: self._run_textbox_event("<<Copy>>")),
+            ("Paste", lambda: self._run_textbox_event("<<Paste>>", update_stats=True)),
+            ("Select All", lambda: self._run_textbox_event("<<SelectAll>>")),
+        ]
+
+        for item in items:
+            if item is None:
+                sep = ctk.CTkFrame(master=container, height=1, fg_color=("gray75", "gray28"), corner_radius=0)
+                sep.pack(fill="x", padx=6, pady=3)
+            else:
+                label, cmd = item
+                btn = ctk.CTkButton(
+                    master=container,
+                    text=label,
+                    command=cmd,
+                    anchor="w",
+                    height=26,
+                    width=190,
+                    corner_radius=4,
+                    fg_color="transparent",
+                    hover_color=("#3B8ED0", "#1F6AA5"),
+                    text_color=("gray10", "#DCE4EE"),
+                )
+                btn.pack(fill="x", padx=4, pady=1)
+
+        menu_win.bind("<Escape>", lambda e: self.close_context_menu())
+
+        menu_win.update_idletasks()
+        w = menu_win.winfo_reqwidth()
+        h = menu_win.winfo_reqheight()
+        x = max(0, min(event.x_root, self.winfo_screenwidth() - w - 8))
+        y = max(0, min(event.y_root, self.winfo_screenheight() - h - 8))
+        menu_win.geometry(f"+{x}+{y}")
+        menu_win.deiconify()
         return "break"
 
     def load_file(self, filepath):
