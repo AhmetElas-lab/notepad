@@ -99,6 +99,21 @@ class App(ctk.CTk):
         self.bind("<Button-1>", self._close_menu_if_open)
         self.bind("<FocusOut>", self._on_app_focus_out)
 
+        # Linux-style window move (Alt + Left-Drag) and resize (Alt + Right-Drag)
+        self._wm_mode = None
+        self._wm_resize_edges = (1, 1)
+        self._wm_drag_origin = (0, 0)
+        self._wm_win_start = (0, 0, 700, 400)
+        for widget in (self, self.textbox):
+            widget.bind("<Alt-ButtonPress-1>", lambda e: self._start_wm_drag(e, "move"))
+            widget.bind("<Alt-ButtonPress-3>", lambda e: self._start_wm_drag(e, "resize"))
+        self.bind_all("<Alt-ButtonPress-1>", lambda e: self._start_wm_drag(e, "move"))
+        self.bind_all("<Alt-ButtonPress-3>", lambda e: self._start_wm_drag(e, "resize"))
+        self.bind_all("<B1-Motion>", self._on_wm_motion)
+        self.bind_all("<B3-Motion>", self._on_wm_motion)
+        self.bind_all("<ButtonRelease-1>", self._on_wm_release)
+        self.bind_all("<ButtonRelease-3>", self._on_wm_release)
+
         # Open file passed via command line argument / Windows file association (if any)
         if len(sys.argv) > 1:
             raw_arg = sys.argv[1].strip("'").strip('"')
@@ -193,8 +208,74 @@ class App(ctk.CTk):
         if update_stats:
             self.after_idle(self.text_changed)
 
+    def _start_wm_drag(self, event, mode):
+        """Starts Linux-style Alt+Drag window move or quadrant-aware resize."""
+        if event.widget.winfo_toplevel() != self:
+            return None
+        self.close_context_menu()
+        if self.state() == "zoomed":
+            return "break"
+
+        self._wm_mode = mode
+        self._wm_drag_origin = (event.x_root, event.y_root)
+        win_x = self.winfo_x()
+        win_y = self.winfo_y()
+        win_w = self.winfo_width()
+        win_h = self.winfo_height()
+        self._wm_win_start = (win_x, win_y, win_w, win_h)
+
+        if mode == "move":
+            self._set_drag_cursor("fleur")
+        else:
+            rel_x = event.x_root - win_x
+            rel_y = event.y_root - win_y
+            horiz = 1 if rel_x >= win_w / 2 else -1
+            vert = 1 if rel_y >= win_h / 2 else -1
+            self._wm_resize_edges = (horiz, vert)
+            cursor = "size_nw_se" if horiz == vert else "size_ne_sw"
+            self._set_drag_cursor(cursor)
+        return "break"
+
+    def _on_wm_motion(self, event):
+        """Updates window position or size while an Alt+Drag gesture is active."""
+        if self._wm_mode is None:
+            return None
+
+        start_x_root, start_y_root = self._wm_drag_origin
+        win_x, win_y, win_w, win_h = self._wm_win_start
+        dx = event.x_root - start_x_root
+        dy = event.y_root - start_y_root
+
+        if self._wm_mode == "move":
+            self.geometry(f"+{win_x + dx}+{win_y + dy}")
+        elif self._wm_mode == "resize":
+            horiz, vert = self._wm_resize_edges
+            min_w, min_h = 240, 150
+            new_w = max(min_w, win_w + horiz * dx)
+            new_h = max(min_h, win_h + vert * dy)
+            new_x = win_x if horiz == 1 else win_x + (win_w - new_w)
+            new_y = win_y if vert == 1 else win_y + (win_h - new_h)
+            scaling = self._get_window_scaling()
+            self.geometry(f"{round(new_w / scaling)}x{round(new_h / scaling)}+{new_x}+{new_y}")
+        return "break"
+
+    def _on_wm_release(self, event):
+        """Ends an active Alt+Drag move/resize gesture and restores cursors."""
+        if self._wm_mode is None:
+            return None
+        self._wm_mode = None
+        self.configure(cursor="")
+        self.textbox._textbox.configure(cursor="xterm")
+        return "break"
+
+    def _set_drag_cursor(self, cursor_name):
+        self.configure(cursor=cursor_name)
+        self.textbox._textbox.configure(cursor=cursor_name)
+
     def show_context_menu(self, event):
         """Displays a theme-matched right-click menu with Focus Mode, Pin, and editor actions."""
+        if event.state & 0x20000:
+            return "break"
         self.close_context_menu()
 
         menu_win = ctk.CTkToplevel(self)
